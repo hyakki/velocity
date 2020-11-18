@@ -10,14 +10,11 @@ import * as THREE from 'three'
 
 import glsl from 'glslify'
 
-import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js'
-import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
-import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
-
 import city from './textures/city.png'
 
 import { lerp } from 'math-toolbox'
 import Hammer from 'hammerjs'
+import mitt from '@/mitt/mitt'
 
 // eslint-disable-next-line
 let OrbitControls = require('three-orbit-controls')(THREE)
@@ -28,10 +25,9 @@ export default {
     const container = ref()
 
     let time = 0
-    let camera, scene, renderer
+    let camera, light, scene, renderer
     let sketchGeometry, sketchMaterial, sketchMesh
     let dragGeometry, dragMaterial, dragMesh
-    let composer, renderPass, bloomPass
     let velocityHelper, accHelper, dragHelper
     let hammer
 
@@ -43,13 +39,12 @@ export default {
       const { width, height } = container.value.getBoundingClientRect()
 
       renderer.setSize(width, height)
-      composer.setSize(width, height)
     }
 
     const mouseWheelHandler = e => {
       const { deltaY } = e
 
-      acc.x += deltaY > 0 ? 0.02 : -0.02
+      acc.x += deltaY > 0 ? -0.02 : 0.02
     }
 
     const setCameraAspect = () => {
@@ -65,7 +60,8 @@ export default {
       sketchGeometry = new THREE.BoxBufferGeometry(1, 1, 1, 1, 1)
       sketchGeometry.translate(0, 0.5, 0)
 
-      sketchMaterial = new THREE.MeshNormalMaterial({
+      sketchMaterial = new THREE.MeshPhongMaterial({
+        color: 0xdddddd,
         side: THREE.DoubleSide,
       })
 
@@ -86,29 +82,24 @@ export default {
       camera.lookAt(0, 0, 0)
     }
 
+    const createLight = () => {
+      light = new THREE.SpotLight(0xffffff)
+      light.position.set(2, 3, 1)
+      light.castShadow = true
+      light.intensity = 1.5
+
+      scene.add(light)
+    }
+
     const createScene = () => {
       scene = new THREE.Scene()
-      scene.background = new THREE.Color(0x40162c)
+      scene.background = new THREE.Color(0x111111)
     }
 
     const createRenderer = () => {
       const { width, height } = container.value.getBoundingClientRect()
 
-      renderer = new THREE.WebGLRenderer({ antialias: false })
-      composer = new EffectComposer(renderer)
-
-      renderPass = new RenderPass(scene, camera)
-      bloomPass = new UnrealBloomPass(
-        new THREE.Vector2(width, height),
-        0.0, // strength
-        1.0, // radius
-        0.2 // threshold
-      )
-
-      composer.addPass(renderPass)
-      composer.addPass(bloomPass)
-
-      bloomPass.renderToScreen = true
+      renderer = new THREE.WebGLRenderer({ antialias: true })
     }
 
     const createOrbitControls = () => {
@@ -119,7 +110,7 @@ export default {
       const dir = velocity
       const origin = new THREE.Vector3(0, 0, 1.25)
       const length = 0.5
-      const hex = 0xffff00
+      const hex = 0xff0000
 
       velocityHelper = new THREE.ArrowHelper(dir, origin, length, hex)
 
@@ -130,7 +121,7 @@ export default {
       const dir = acc
       const origin = new THREE.Vector3(0, 0, 1.5)
       const length = 0.5
-      const hex = 0x00ffff
+      const hex = 0x00ff00
 
       accHelper = new THREE.ArrowHelper(dir, origin, length, hex)
 
@@ -141,7 +132,7 @@ export default {
       const dir = drag
       const origin = new THREE.Vector3(0, 0, 1.75)
       const length = 0.5
-      const hex = 0xff00ff
+      const hex = 0x0000ff
 
       dragHelper = new THREE.ArrowHelper(dir, origin, length, hex)
 
@@ -149,7 +140,7 @@ export default {
     }
 
     const createGridHelper = () => {
-      const gridHelper = new THREE.GridHelper(8, 8)
+      const gridHelper = new THREE.GridHelper(30, 2)
 
       scene.add(gridHelper)
     }
@@ -158,7 +149,6 @@ export default {
     const dragCoef = 0.1
 
     const update = () => {
-      composer.render(scene, camera)
       time += 1
 
       acc.x = lerp(0.0, acc.x, 1 - deccelerationCoef)
@@ -170,15 +160,21 @@ export default {
       // velocity.x = lerp(0.0, velocity.x, 0.2)
 
       velocityHelper.setDirection(velocity.clone().normalize())
-      velocityHelper.setLength(velocity.clone().length() * 100.0)
+      velocityHelper.setLength(velocity.clone().length() * 30.0)
 
       accHelper.setDirection(acc.clone().normalize())
-      accHelper.setLength(acc.clone().length() * 100.0)
+      accHelper.setLength(acc.clone().length() * 30.0)
 
       dragHelper.setDirection(drag.clone().normalize())
-      dragHelper.setLength(drag.clone().length() * 100.0)
+      dragHelper.setLength(drag.clone().length() * 30.0)
 
       sketchMesh.scale.y += velocity.x
+
+      renderer.render(scene, camera)
+
+      mitt.emit('velocity', Math.round(velocity.length() * 100.0 * 100) / 100)
+      mitt.emit('acceleration', Math.round(acc.length() * 100.0 * 100) / 100)
+      mitt.emit('drag', Math.round(drag.length() * 100.0 * 100) / 100)
 
       window.requestAnimationFrame(update)
     }
@@ -191,6 +187,7 @@ export default {
     onMounted(() => {
       createCamera()
       createScene()
+      createLight()
 
       createSketch()
 
@@ -212,8 +209,15 @@ export default {
       )
 
       hammer.on('pan', e => {
-        acc.x = e.overallVelocityY / 50.0
-        console.log(acc.x)
+        if (
+          e.overallVelocityY === Infinity ||
+          e.overallVelocityY === -Infinity
+        ) {
+          console.log('Who cares about infinity?')
+          return
+        }
+
+        acc.x = (e.overallVelocityY / 100.0) * -1
       })
 
       window.addEventListener('mousewheel', mouseWheelHandler)
